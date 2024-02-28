@@ -5,12 +5,11 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
 import cv2
 from tqdm import tqdm
 
 opt = TrainOptions().parse()
-os.makedirs('sample/'+opt.name,exist_ok=True)
+os.makedirs('sample/'+opt.name, exist_ok=True)
 
 def CreateDataset(opt):
     if opt.dataset == 'vitonhd':
@@ -23,27 +22,18 @@ def CreateDataset(opt):
         dataset.initialize(opt, mode='test', stage='gen')
     return dataset
 
-torch.cuda.set_device(opt.local_rank)
-torch.distributed.init_process_group(
-    'nccl',
-    init_method='env://'
-)
-device = torch.device(f'cuda:{opt.local_rank}')
+device = torch.device('cuda')
 
 train_data = CreateDataset(opt)
-train_sampler = DistributedSampler(train_data)
 train_loader = DataLoader(train_data, batch_size=opt.batchSize, shuffle=False,
-                          num_workers=4, pin_memory=True, sampler=train_sampler)
+                          num_workers=2, pin_memory=True)
 
 gen_model = ResUnetGenerator(36, 4, 5, ngf=64, norm_layer=nn.BatchNorm2d)
 gen_model.train()
 gen_model.cuda()
 load_checkpoint_parallel(gen_model, opt.PBAFN_gen_checkpoint)
 
-gen_model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(gen_model).to(device)
-if opt.isTrain and len(opt.gpu_ids):
-    model_gen = torch.nn.parallel.DistributedDataParallel(gen_model, device_ids=[opt.local_rank])
-
+model_gen = gen_model
 model_gen.eval()
 
 for data in tqdm(train_loader):
