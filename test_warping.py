@@ -6,7 +6,6 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
 import cv2
 import tqdm
 
@@ -24,17 +23,12 @@ def CreateDataset(opt):
         dataset.initialize(opt, mode='test', stage='warp')
     return dataset
 
-torch.cuda.set_device(opt.local_rank)
-torch.distributed.init_process_group(
-    'nccl',
-    init_method='env://'
-)
-device = torch.device(f'cuda:{opt.local_rank}')
+torch.cuda.set_device(opt.gpu_ids[0])
+device = torch.device('cuda')
 
 train_data = CreateDataset(opt)
-train_sampler = DistributedSampler(train_data)
 train_loader = DataLoader(train_data, batch_size=opt.batchSize, shuffle=False,
-                          num_workers=4, pin_memory=True, sampler=train_sampler)
+                          num_workers=2, pin_memory=True)
 
 if opt.dataset == 'vitonhd':
     warp_model = AFWM_Vitonhd_lrarms(opt, 51)
@@ -44,20 +38,15 @@ warp_model.train()
 warp_model.cuda()
 load_checkpoint_parallel(warp_model, opt.PBAFN_warp_checkpoint)
 
-warp_model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(warp_model).to(device)
-
-if opt.isTrain and len(opt.gpu_ids):
-    model = torch.nn.parallel.DistributedDataParallel(
-        warp_model, device_ids=[opt.local_rank])
-
 softmax = torch.nn.Softmax(dim=1)
+
+model = warp_model
 
 for ii, data in enumerate(tqdm.tqdm(train_loader)):
     with torch.no_grad():
-        pre_clothes_edge = data['edge']
-        clothes = data['color']
-        clothes = clothes * pre_clothes_edge
-        pose = data['pose']
+        pre_clothes_edge = data['edge'].to(device)
+        clothes = data['color'].to(device)
+        pose = data['pose'].to(device)
 
         size = data['color'].size()
         oneHot_size1 = (size[0], 25, size[2], size[3])
@@ -66,9 +55,9 @@ for ii, data in enumerate(tqdm.tqdm(train_loader)):
         densepose = densepose * 2.0 - 1.0
         densepose_fore = data['densepose']/24.0
 
-        left_cloth_sleeve_mask = data['flat_clothes_left_mask']
-        cloth_torso_mask = data['flat_clothes_middle_mask']
-        right_cloth_sleeve_mask = data['flat_clothes_right_mask']
+        left_cloth_sleeve_mask = data['flat_clothes_left_mask'].cuda()
+        cloth_torso_mask = data['flat_clothes_middle_mask'].cuda()
+        right_cloth_sleeve_mask = data['flat_clothes_right_mask'].cuda()
 
         clothes_left = clothes * left_cloth_sleeve_mask
         clothes_torso = clothes * cloth_torso_mask
